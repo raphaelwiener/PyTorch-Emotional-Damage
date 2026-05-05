@@ -45,3 +45,6 @@ disgust, neutral, sarcasm, confusion, shame, desire
 - Model: RoBERTa-base
 - Framework: PyTorch + HuggingFace Transformers
 - Datasets: go_emotions, dair-ai/emotion, boltuix/emotions-dataset
+
+## Install on SchoolPC
+- pip.exe install torch transformers datasets
