@@ -1,26 +1,42 @@
 # Emotions-Erkennung mit KI
-# Ziel: Texte analysieren und Emotionen erkennen
-# Schritt 1: Dataset laden und anschauen was drin ist
+# Schritt 2: Dataset genauer anschauen und Label-Namen ausgeben
 
 from datasets import load_dataset
 
-# go_emotions ist ein dataset von google
-# es enthaelt reddit kommentare die mit emotionen getaggt sind
-# es gibt 28 verschiedene emotionen
+# dataset laden
 dataset = load_dataset("google-research-datasets/go_emotions", "simplified")
 
-# erstmal ausgeben wie das dataset aufgebaut ist
-print(dataset)
+# alle 28 emotions labels in der richtigen reihenfolge
+# die zahlen in den labels entsprechen dem index hier
+EMOTION_LABELS = [
+    "admiration", "amusement", "anger", "annoyance", "approval", "caring",
+    "confusion", "curiosity", "desire", "disappointment", "disapproval",
+    "disgust", "embarrassment", "excitement", "fear", "gratitude", "grief",
+    "joy", "love", "nervousness", "optimism", "pride", "realization",
+    "relief", "remorse", "sadness", "surprise", "neutral"
+]
 
-# wie viele beispiele gibt es?
-print(f"\nAnzahl Training-Beispiele: {len(dataset['train'])}")
-print(f"Anzahl Validation-Beispiele: {len(dataset['validation'])}")
-print(f"Anzahl Test-Beispiele: {len(dataset['test'])}")
+print(f"Anzahl Emotionen: {len(EMOTION_LABELS)}")
+print(f"Emotionen: {EMOTION_LABELS}\n")
 
-# ein paar beispiele anschauen
-print("\n--- Erste 5 Beispiele ---")
-for i in range(5):
+# beispiele mit lesbaren label namen ausgeben
+print("--- Beispiele mit lesbaren Labels ---")
+for i in range(10):
     beispiel = dataset["train"][i]
+    # label nummern in namen umwandeln
+    label_namen = [EMOTION_LABELS[l] for l in beispiel["labels"]]
     print(f"\nText:   {beispiel['text']}")
-    print(f"Labels: {beispiel['labels']}")
-    print(f"ID:     {beispiel['id']}")
+    print(f"Labels: {label_namen}")
+
+# analysieren wie haeufig jede emotion vorkommt
+print("\n--- Haeufigkeit pro Emotion ---")
+zaehler = {label: 0 for label in EMOTION_LABELS}
+
+for beispiel in dataset["train"]:
+    for label_idx in beispiel["labels"]:
+        zaehler[EMOTION_LABELS[label_idx]] += 1
+
+# sortiert ausgeben
+sortiert = sorted(zaehler.items(), key=lambda x: x[1], reverse=True)
+for emotion, anzahl in sortiert:
+    print(f"  {emotion:<15} {anzahl}")
