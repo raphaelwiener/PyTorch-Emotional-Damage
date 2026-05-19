@@ -1,11 +1,15 @@
 # Emotions-Erkennung mit KI
-# Schritt 6: Inference hinzufuegen - eigene texte testen
-# jetzt kann man nach dem training texte eingeben und emotionen erkennen
+# Schritt 7: Wechsel von DistilBERT zu RoBERTa
+# Grund: RoBERTa wurde auf mehr daten trainiert und versteht
+# umgangssprache und social media texte viel besser als DistilBERT
+# RoBERTa = Robustly Optimized BERT Pretraining Approach
+# Nachteil: groesser (~500MB statt ~250MB) und etwas langsamer
 
 from datasets import load_dataset
 import torch
 from torch.utils.data import DataLoader
-from transformers import DistilBertTokenizer, DistilBertForSequenceClassification
+# RoBERTa statt DistilBERT importieren
+from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from torch.optim import AdamW
 import os
 
@@ -25,9 +29,11 @@ model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
 
 if model_exists:
     print("Vorhandenes Modell wird geladen...")
-    tokenizer = DistilBertTokenizer.from_pretrained(TOKENIZER_PATH)
-    model = DistilBertForSequenceClassification.from_pretrained(
-        "distilbert-base-uncased",
+    # RoBERTa tokenizer laden
+    tokenizer = RobertaTokenizer.from_pretrained(TOKENIZER_PATH)
+    # RoBERTa model laden
+    model = RobertaForSequenceClassification.from_pretrained(
+        "roberta-base",
         num_labels=NUM_LABELS
     )
     model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
@@ -35,7 +41,10 @@ if model_exists:
 
 else:
     print("Kein Modell gefunden, Training startet...")
-    tokenizer = DistilBertTokenizer.from_pretrained("distilbert-base-uncased")
+
+    # RoBERTa tokenizer - funktioniert etwas anders als DistilBERT
+    # verwendet byte-pair encoding (BPE) statt wordpiece
+    tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
 
     def tokenize(batch):
         tokens = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=128)
@@ -52,8 +61,9 @@ else:
     tokenized.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     train_loader = DataLoader(tokenized["train"], batch_size=16, shuffle=True)
 
-    model = DistilBertForSequenceClassification.from_pretrained(
-        "distilbert-base-uncased",
+    # RoBERTa model fuer klassifizierung
+    model = RobertaForSequenceClassification.from_pretrained(
+        "roberta-base",
         num_labels=NUM_LABELS,
         problem_type="multi_label_classification"
     )
@@ -64,10 +74,13 @@ else:
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    print("\nTraining startet (100 batches)...")
+    # mehr batches als vorher - 500 statt 100
+    # ergebnisse sollten damit deutlich besser werden
+    MAX_BATCHES = 500
+    print(f"\nTraining startet ({MAX_BATCHES} batches)...")
     model.train()
     for batch_idx, batch in enumerate(train_loader):
-        if batch_idx >= 100:
+        if batch_idx >= MAX_BATCHES:
             break
 
         input_ids = batch["input_ids"].to(device)
@@ -80,8 +93,8 @@ else:
         loss.backward()
         optimizer.step()
 
-        if batch_idx % 10 == 0:
-            print(f"Batch {batch_idx}/100, Loss: {loss.item():.4f}")
+        if batch_idx % 50 == 0:
+            print(f"Batch {batch_idx}/{MAX_BATCHES}, Loss: {loss.item():.4f}")
 
     torch.save(model.state_dict(), MODEL_PATH)
     tokenizer.save_pretrained(TOKENIZER_PATH)
@@ -90,12 +103,7 @@ else:
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
-# ─────────────────────────────────────────
-# INFERENCE - texte analysieren
-# ─────────────────────────────────────────
-
-# sigmoid wandelt die rohausgabe des models in wahrscheinlichkeiten um
-# z.b. 0.85 = 85% wahrscheinlichkeit fuer diese emotion
+# inference funktion
 def predict(text):
     model.eval()
     inputs = tokenizer(
@@ -106,24 +114,16 @@ def predict(text):
         max_length=128
     ).to(device)
 
-    # no_grad spart speicher weil keine gradienten berechnet werden muessen
     with torch.no_grad():
         output = model(**inputs)
 
-    # sigmoid gibt werte zwischen 0 und 1 zurueck
     probs = torch.sigmoid(output.logits[0])
-
-    # alle emotionen mit ihrer wahrscheinlichkeit als liste
     results = [(EMOTION_LABELS[i], probs[i].item()) for i in range(NUM_LABELS)]
-
-    # nach wahrscheinlichkeit sortieren, hoechste zuerst
     results.sort(key=lambda x: x[1], reverse=True)
-
-    # nur top 5 zurueckgeben
     return results[:5]
 
-# erste tests - ergebnisse sind noch nicht gut weil nur 100 batches trainiert
-print("\n--- Erste Tests ---")
+# vergleich mit vorher - sind die ergebnisse besser?
+print("\n--- Test RoBERTa vs DistilBERT ---")
 test_texte = [
     "I love this so much!",
     "I am so angry right now",
@@ -138,7 +138,6 @@ for text in test_texte:
         balken = "█" * int(score * 20)
         print(f"  {emotion:<15} {balken} {score*100:.1f}%")
 
-# eingabe loop - eigene texte testen
 print("\n--- Eigene Texte testen ---")
 print("Text eingeben (exit zum beenden):\n")
 while True:
