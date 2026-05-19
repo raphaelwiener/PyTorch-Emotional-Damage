@@ -1,14 +1,12 @@
 # Emotions-Erkennung mit KI
-# Schritt 7: Wechsel von DistilBERT zu RoBERTa
-# Grund: RoBERTa wurde auf mehr daten trainiert und versteht
-# umgangssprache und social media texte viel besser als DistilBERT
-# RoBERTa = Robustly Optimized BERT Pretraining Approach
-# Nachteil: groesser (~500MB statt ~250MB) und etwas langsamer
+# Schritt 8: Mehr Epochs trainieren und Ergebnisse analysieren
+# Problem bisher: nur 500 batches = 18% des datasets
+# Loesung: komplettes dataset mehrmals durchlaufen (epochs)
+# Epoch = einmal komplett durch alle trainingsdaten
 
 from datasets import load_dataset
 import torch
 from torch.utils.data import DataLoader
-# RoBERTa statt DistilBERT importieren
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from torch.optim import AdamW
 import os
@@ -29,9 +27,7 @@ model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
 
 if model_exists:
     print("Vorhandenes Modell wird geladen...")
-    # RoBERTa tokenizer laden
     tokenizer = RobertaTokenizer.from_pretrained(TOKENIZER_PATH)
-    # RoBERTa model laden
     model = RobertaForSequenceClassification.from_pretrained(
         "roberta-base",
         num_labels=NUM_LABELS
@@ -41,13 +37,10 @@ if model_exists:
 
 else:
     print("Kein Modell gefunden, Training startet...")
-
-    # RoBERTa tokenizer - funktioniert etwas anders als DistilBERT
-    # verwendet byte-pair encoding (BPE) statt wordpiece
     tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
 
     def tokenize(batch):
-        tokens = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=128)
+        tokens = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=64)
         labels = torch.zeros(len(batch["text"]), NUM_LABELS, dtype=torch.float32)
         for i, label_list in enumerate(batch["labels"]):
             for l in label_list:
@@ -61,7 +54,6 @@ else:
     tokenized.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     train_loader = DataLoader(tokenized["train"], batch_size=16, shuffle=True)
 
-    # RoBERTa model fuer klassifizierung
     model = RobertaForSequenceClassification.from_pretrained(
         "roberta-base",
         num_labels=NUM_LABELS,
@@ -74,31 +66,42 @@ else:
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    # mehr batches als vorher - 500 statt 100
-    # ergebnisse sollten damit deutlich besser werden
-    MAX_BATCHES = 500
-    print(f"\nTraining startet ({MAX_BATCHES} batches)...")
-    model.train()
-    for batch_idx, batch in enumerate(train_loader):
-        if batch_idx >= MAX_BATCHES:
-            break
+    # 3 epochs - das dataset wird 3x komplett durchlaufen
+    # nach jeder epoch wird der durchschnittliche loss ausgegeben
+    NUM_EPOCHS = 3
+    print(f"\nTraining startet ({NUM_EPOCHS} Epochs)...")
 
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].float().to(device)
+    for epoch in range(NUM_EPOCHS):
+        print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
+        model.train()
+        epoch_loss = []
 
-        optimizer.zero_grad()
-        output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-        loss = output.loss
-        loss.backward()
-        optimizer.step()
+        for batch_idx, batch in enumerate(train_loader):
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+            labels = batch["labels"].float().to(device)
 
-        if batch_idx % 50 == 0:
-            print(f"Batch {batch_idx}/{MAX_BATCHES}, Loss: {loss.item():.4f}")
+            optimizer.zero_grad()
+            output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
+            loss = output.loss
+            loss.backward()
+            optimizer.step()
 
-    torch.save(model.state_dict(), MODEL_PATH)
-    tokenizer.save_pretrained(TOKENIZER_PATH)
-    print(f"\nModell gespeichert!")
+            epoch_loss.append(loss.item())
+
+            if batch_idx % 100 == 0:
+                print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
+
+        # durchschnittlicher loss pro epoch
+        avg_loss = sum(epoch_loss) / len(epoch_loss)
+        print(f"\nEpoch {epoch+1} fertig | Durchschnitt Loss: {avg_loss:.4f}")
+
+        # nach jeder epoch speichern
+        torch.save(model.state_dict(), MODEL_PATH)
+        tokenizer.save_pretrained(TOKENIZER_PATH)
+        print(f"Modell gespeichert!")
+
+    print("\nTraining komplett!")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
@@ -111,7 +114,7 @@ def predict(text):
         return_tensors="pt",
         padding=True,
         truncation=True,
-        max_length=128
+        max_length=64
     ).to(device)
 
     with torch.no_grad():
@@ -122,14 +125,15 @@ def predict(text):
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:5]
 
-# vergleich mit vorher - sind die ergebnisse besser?
-print("\n--- Test RoBERTa vs DistilBERT ---")
+# ergebnisse nach 3 epochs testen
+print("\n--- Test nach 3 Epochs ---")
 test_texte = [
     "I love this so much!",
     "I am so angry right now",
-    "This makes me really sad",
-    "I am scared of what happens next",
-    "fuck you"
+    "fuck you",
+    "I miss you so much",
+    "I am scared",
+    "thanks for nothing"
 ]
 
 for text in test_texte:
