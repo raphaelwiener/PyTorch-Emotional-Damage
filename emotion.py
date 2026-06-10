@@ -1,9 +1,9 @@
 # Emotions-Erkennung mit KI
-# Schritt 13: Validation Set einbauen
-# Problem bisher: wir wissen nicht ob das model wirklich gut ist
-# oder ob es nur die trainingsdaten auswendig lernt (overfitting)
-# Loesung: validation set - daten die das model nie beim training sieht
-# nach jeder epoch testen wie gut das model auf neuen daten ist
+# Schritt 14: Early Stopping implementieren
+# Problem: training laeuft immer alle epochs durch auch wenn es nicht mehr besser wird
+# Loesung: early stopping - training automatisch stoppen wenn val loss nicht mehr sinkt
+# Vorteil: spart zeit und verhindert overfitting
+# patience = wie viele epochs ohne verbesserung bevor training gestoppt wird
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
@@ -74,15 +74,13 @@ def balance_dataset(dataset, max_pro_label=3000):
     return Dataset.from_dict({"text": texts, "label": labels})
 
 # ─────────────────────────────────────────
-# DATASET LADEN - jetzt mit train UND validation split
+# DATASET LADEN
 # ─────────────────────────────────────────
 def load_go_emotions():
     print("  Lade go_emotions...")
     raw = load_dataset("google-research-datasets/go_emotions", "simplified")
     texts_train, labels_train = [], []
     texts_val, labels_val = [], []
-
-    # train split
     for item in raw["train"]:
         for lbl_idx in item["labels"]:
             orig = GO_ORIG_LABELS[lbl_idx]
@@ -91,8 +89,6 @@ def load_go_emotions():
                 texts_train.append(item["text"])
                 labels_train.append(EMOTION_LABELS.index(mapped))
                 break
-
-    # validation split - go_emotions hat einen eigenen val split
     for item in raw["validation"]:
         for lbl_idx in item["labels"]:
             orig = GO_ORIG_LABELS[lbl_idx]
@@ -101,7 +97,6 @@ def load_go_emotions():
                 texts_val.append(item["text"])
                 labels_val.append(EMOTION_LABELS.index(mapped))
                 break
-
     print(f"  → {len(texts_train)} Train / {len(texts_val)} Val")
     return (
         Dataset.from_dict({"text": texts_train, "label": labels_train}),
@@ -113,16 +108,12 @@ def load_dair():
     raw = load_dataset("dair-ai/emotion", "split")
     texts_train, labels_train = [], []
     texts_val, labels_val = [], []
-
     for item in raw["train"]:
         texts_train.append(item["text"])
         labels_train.append(EMOTION_LABELS.index(DAIR_MAP[item["label"]]))
-
-    # dair-ai hat auch einen eigenen validation split
     for item in raw["validation"]:
         texts_val.append(item["text"])
         labels_val.append(EMOTION_LABELS.index(DAIR_MAP[item["label"]]))
-
     print(f"  → {len(texts_train)} Train / {len(texts_val)} Val")
     return (
         Dataset.from_dict({"text": texts_train, "label": labels_train}),
@@ -139,7 +130,6 @@ def load_boltuix():
             break
     if text_col is None:
         text_col = raw.column_names[0]
-
     texts, labels = [], []
     for item in raw:
         lbl = item.get("label", item.get("emotion", 2))
@@ -151,8 +141,6 @@ def load_boltuix():
         if mapped in EMOTION_LABELS:
             texts.append(item[text_col])
             labels.append(EMOTION_LABELS.index(mapped))
-
-    # boltuix hat keinen eigenen val split - manuell 90/10 aufteilen
     split_idx = int(len(texts) * 0.9)
     print(f"  → {split_idx} Train / {len(texts) - split_idx} Val")
     return (
@@ -161,7 +149,7 @@ def load_boltuix():
     )
 
 # ─────────────────────────────────────────
-# TOKENIZER FUNKTION
+# TOKENIZER
 # ─────────────────────────────────────────
 def make_loader(dataset, tokenizer, shuffle=True):
     def tokenize_fn(batch):
@@ -177,17 +165,11 @@ def make_loader(dataset, tokenizer, shuffle=True):
     return DataLoader(tokenized, batch_size=16, shuffle=shuffle)
 
 # ─────────────────────────────────────────
-# VALIDATION FUNKTION
+# VALIDATION
 # ─────────────────────────────────────────
 def evaluate(model, device, val_loader):
-    """
-    Berechnet den loss auf dem validation set.
-    Je niedriger desto besser - zeigt ob das model wirklich lernt
-    oder nur trainingsdaten auswendig lernt (overfitting)
-    """
     model.eval()
-    total_loss = 0
-    count = 0
+    total_loss, count = 0, 0
     with torch.no_grad():
         for batch in val_loader:
             input_ids = batch["input_ids"].to(device)
@@ -222,15 +204,13 @@ else:
     train_dair, val_dair = load_dair()
     train_boltuix, val_boltuix = load_boltuix()
 
-    # train datasets zusammenfuehren und balancieren
     train_combined = concatenate_datasets([train_go, train_dair, train_boltuix])
     val_combined = concatenate_datasets([val_go, val_dair, val_boltuix])
 
     print("\nDataset wird balanciert...")
     train_all = balance_dataset(train_combined, max_pro_label=3000).shuffle(seed=42)
     val_all = balance_dataset(val_combined, max_pro_label=500).shuffle(seed=42)
-
-    print(f"\nTrain: {len(train_all)} | Val: {len(val_all)}")
+    print(f"Train: {len(train_all)} | Val: {len(val_all)}")
 
     train_loader = make_loader(train_all, tokenizer, shuffle=True)
     val_loader = make_loader(val_all, tokenizer, shuffle=False)
@@ -247,9 +227,13 @@ else:
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    NUM_EPOCHS = 3
+    # early stopping einstellungen
+    NUM_EPOCHS = 10        # maximal 10 epochs
+    PATIENCE = 2           # nach 2 epochs ohne verbesserung stoppen
     best_val_loss = float("inf")
-    print(f"\nTraining startet ({NUM_EPOCHS} Epochs)...")
+    patience_counter = 0   # zaehlt wie viele epochs keine verbesserung
+
+    print(f"\nTraining startet (max {NUM_EPOCHS} Epochs, patience={PATIENCE})...")
 
     for epoch in range(NUM_EPOCHS):
         print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
@@ -273,27 +257,38 @@ else:
                 print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
 
         avg_loss = sum(epoch_loss) / len(epoch_loss)
-
-        # validation nach jeder epoch
         val_loss = evaluate(model, device, val_loader)
-        print(f"\nEpoch {epoch+1} | Train Loss: {avg_loss:.4f} | Val Loss: {val_loss:.4f}")
 
-        # nur bestes modell speichern
+        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f} | Bisher bestes: {best_val_loss:.4f}")
+
         if val_loss < best_val_loss:
+            # verbesserung - modell speichern und patience zuruecksetzen
             best_val_loss = val_loss
+            patience_counter = 0
             torch.save(model.state_dict(), MODEL_PATH)
             tokenizer.save_pretrained(TOKENIZER_PATH)
             with open(LABELS_PATH, "w") as f:
                 f.write("\n".join(EMOTION_LABELS))
-            print(f"  ✓ Neues bestes Modell gespeichert! (Val Loss: {val_loss:.4f})")
+            print(f"  ✓ Neues bestes Modell gespeichert!")
         else:
-            print(f"  ✗ Kein neues bestes Modell (bisher: {best_val_loss:.4f})")
+            # keine verbesserung - patience erhoehen
+            patience_counter += 1
+            print(f"  ✗ Keine Verbesserung ({patience_counter}/{PATIENCE})")
+
+            # early stop wenn patience erreicht
+            if patience_counter >= PATIENCE:
+                print(f"\n  Early Stop nach Epoch {epoch+1}!")
+                print(f"  Bestes Modell hatte Val Loss: {best_val_loss:.4f}")
+                break
 
     print("\nTraining komplett!")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 
+# ─────────────────────────────────────────
+# INFERENCE
+# ─────────────────────────────────────────
 def predict(text):
     model.eval()
     inputs = tokenizer(
@@ -303,22 +298,19 @@ def predict(text):
         truncation=True,
         max_length=64
     ).to(device)
-
     with torch.no_grad():
         output = model(**inputs)
-
     probs = torch.sigmoid(output.logits[0])
     results = [(EMOTION_LABELS[i], probs[i].item()) for i in range(NUM_LABELS)]
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:5]
 
-print("\n--- Test mit Validation Set ---")
+print("\n--- Test mit Early Stopping ---")
 test_texte = [
     "I am so happy today",
     "I love you",
     "fuck you",
     "I miss you so much",
-    "I am scared",
     "thanks for nothing",
     "the sky is blue"
 ]
