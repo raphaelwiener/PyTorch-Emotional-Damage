@@ -1,9 +1,9 @@
 # Emotions-Erkennung mit KI
-# Schritt 14: Early Stopping implementieren
-# Problem: training laeuft immer alle epochs durch auch wenn es nicht mehr besser wird
-# Loesung: early stopping - training automatisch stoppen wenn val loss nicht mehr sinkt
-# Vorteil: spart zeit und verhindert overfitting
-# patience = wie viele epochs ohne verbesserung bevor training gestoppt wird
+# Schritt 15: Overfitting Problem entdeckt
+# Beim testen mit boltuix dataset ist der loss auf 0.0000 gesunken
+# Das bedeutet das model hat die trainingsdaten auswendig gelernt
+# Auf neuen texten funktioniert es dann nicht mehr
+# Analyse: was ist overfitting und warum ist es passiert?
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
@@ -181,6 +181,29 @@ def evaluate(model, device, val_loader):
     return total_loss / count if count > 0 else 0
 
 # ─────────────────────────────────────────
+# OVERFITTING DEMONSTRATION
+# Diese funktion zeigt wie overfitting aussieht
+# train loss sinkt aber val loss steigt wieder
+# ─────────────────────────────────────────
+def zeige_overfitting_analyse(train_losses, val_losses):
+    print("\n--- Overfitting Analyse ---")
+    print(f"{'Epoch':<8} {'Train Loss':<12} {'Val Loss':<12} {'Status'}")
+    print("-" * 45)
+    best = min(val_losses)
+    for i, (tl, vl) in enumerate(zip(train_losses, val_losses)):
+        if vl == best:
+            status = "← bestes modell"
+        elif vl > best and i > val_losses.index(best):
+            status = "⚠ overfitting!"
+        else:
+            status = ""
+        print(f"  {i+1:<6} {tl:<12.4f} {vl:<12.4f} {status}")
+
+    if val_losses[-1] > val_losses[0]:
+        print("\nProblem: Val Loss am ende hoeher als am anfang = Overfitting")
+        print("Loesung: Early Stopping + Gradient Clipping (naechster commit)")
+
+# ─────────────────────────────────────────
 # MODELL LADEN ODER TRAINIEREN
 # ─────────────────────────────────────────
 model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
@@ -227,11 +250,14 @@ else:
 
     optimizer = AdamW(model.parameters(), lr=2e-5)
 
-    # early stopping einstellungen
-    NUM_EPOCHS = 10        # maximal 10 epochs
-    PATIENCE = 2           # nach 2 epochs ohne verbesserung stoppen
+    NUM_EPOCHS = 10
+    PATIENCE = 2
     best_val_loss = float("inf")
-    patience_counter = 0   # zaehlt wie viele epochs keine verbesserung
+    patience_counter = 0
+
+    # losses fuer analyse speichern
+    train_losses = []
+    val_losses = []
 
     print(f"\nTraining startet (max {NUM_EPOCHS} Epochs, patience={PATIENCE})...")
 
@@ -259,28 +285,29 @@ else:
         avg_loss = sum(epoch_loss) / len(epoch_loss)
         val_loss = evaluate(model, device, val_loader)
 
-        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f} | Bisher bestes: {best_val_loss:.4f}")
+        # losses fuer spaetere analyse speichern
+        train_losses.append(avg_loss)
+        val_losses.append(val_loss)
+
+        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f}")
 
         if val_loss < best_val_loss:
-            # verbesserung - modell speichern und patience zuruecksetzen
             best_val_loss = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), MODEL_PATH)
             tokenizer.save_pretrained(TOKENIZER_PATH)
             with open(LABELS_PATH, "w") as f:
                 f.write("\n".join(EMOTION_LABELS))
-            print(f"  ✓ Neues bestes Modell gespeichert!")
+            print(f"  ✓ Bestes Modell gespeichert!")
         else:
-            # keine verbesserung - patience erhoehen
             patience_counter += 1
             print(f"  ✗ Keine Verbesserung ({patience_counter}/{PATIENCE})")
-
-            # early stop wenn patience erreicht
             if patience_counter >= PATIENCE:
                 print(f"\n  Early Stop nach Epoch {epoch+1}!")
-                print(f"  Bestes Modell hatte Val Loss: {best_val_loss:.4f}")
                 break
 
+    # overfitting analyse ausgeben
+    zeige_overfitting_analyse(train_losses, val_losses)
     print("\nTraining komplett!")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -305,7 +332,7 @@ def predict(text):
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:5]
 
-print("\n--- Test mit Early Stopping ---")
+print("\n--- Test ---")
 test_texte = [
     "I am so happy today",
     "I love you",
