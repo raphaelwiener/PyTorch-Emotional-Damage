@@ -1,9 +1,10 @@
 # Emotions-Erkennung mit KI
-# Schritt 15: Overfitting Problem entdeckt
-# Beim testen mit boltuix dataset ist der loss auf 0.0000 gesunken
-# Das bedeutet das model hat die trainingsdaten auswendig gelernt
-# Auf neuen texten funktioniert es dann nicht mehr
-# Analyse: was ist overfitting und warum ist es passiert?
+# Schritt 16: Gradient Clipping und Weight Decay hinzufuegen
+# Gradient Clipping: verhindert dass gradienten zu gross werden
+# -> grosse gradienten koennen das model destabilisieren
+# Weight Decay: bestraft zu grosse gewichte im model
+# -> macht das model robuster und generalisiert besser
+# Beide techniken helfen gegen overfitting
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
@@ -162,7 +163,7 @@ def make_loader(dataset, tokenizer, shuffle=True):
         return tokens
     tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=dataset.column_names)
     tokenized.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
-    return DataLoader(tokenized, batch_size=16, shuffle=shuffle)
+    return DataLoader(tokenized, batch_size=32, shuffle=shuffle)
 
 # ─────────────────────────────────────────
 # VALIDATION
@@ -179,29 +180,6 @@ def evaluate(model, device, val_loader):
             total_loss += output.loss.item()
             count += 1
     return total_loss / count if count > 0 else 0
-
-# ─────────────────────────────────────────
-# OVERFITTING DEMONSTRATION
-# Diese funktion zeigt wie overfitting aussieht
-# train loss sinkt aber val loss steigt wieder
-# ─────────────────────────────────────────
-def zeige_overfitting_analyse(train_losses, val_losses):
-    print("\n--- Overfitting Analyse ---")
-    print(f"{'Epoch':<8} {'Train Loss':<12} {'Val Loss':<12} {'Status'}")
-    print("-" * 45)
-    best = min(val_losses)
-    for i, (tl, vl) in enumerate(zip(train_losses, val_losses)):
-        if vl == best:
-            status = "← bestes modell"
-        elif vl > best and i > val_losses.index(best):
-            status = "⚠ overfitting!"
-        else:
-            status = ""
-        print(f"  {i+1:<6} {tl:<12.4f} {vl:<12.4f} {status}")
-
-    if val_losses[-1] > val_losses[0]:
-        print("\nProblem: Val Loss am ende hoeher als am anfang = Overfitting")
-        print("Loesung: Early Stopping + Gradient Clipping (naechster commit)")
 
 # ─────────────────────────────────────────
 # MODELL LADEN ODER TRAINIEREN
@@ -248,21 +226,21 @@ else:
     print(f"Device: {device}")
     model.to(device)
 
-    optimizer = AdamW(model.parameters(), lr=2e-5)
+    # weight_decay=0.01 bestraft zu grosse gewichte -> weniger overfitting
+    # ist direkt im AdamW optimizer eingebaut
+    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
 
     NUM_EPOCHS = 10
     PATIENCE = 2
     best_val_loss = float("inf")
     patience_counter = 0
+    loss_history = []
 
-    # losses fuer analyse speichern
-    train_losses = []
-    val_losses = []
-
-    print(f"\nTraining startet (max {NUM_EPOCHS} Epochs, patience={PATIENCE})...")
+    print(f"\nTraining startet (max {NUM_EPOCHS} Epochs)...")
+    print("Neu: Gradient Clipping + Weight Decay gegen Overfitting\n")
 
     for epoch in range(NUM_EPOCHS):
-        print(f"\nEpoch {epoch+1}/{NUM_EPOCHS}")
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
         model.train()
         epoch_loss = []
 
@@ -275,21 +253,23 @@ else:
             output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = output.loss
             loss.backward()
-            optimizer.step()
 
+            # gradient clipping - gradienten auf maximal 1.0 begrenzen
+            # verhindert dass ein einzelner batch das model zu stark veraendert
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            optimizer.step()
             epoch_loss.append(loss.item())
+            loss_history.append(loss.item())
 
             if batch_idx % 50 == 0:
-                print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f}")
+                avg = sum(loss_history[-50:]) / min(len(loss_history), 50)
+                print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f} | Avg: {avg:.4f}")
 
         avg_loss = sum(epoch_loss) / len(epoch_loss)
         val_loss = evaluate(model, device, val_loader)
 
-        # losses fuer spaetere analyse speichern
-        train_losses.append(avg_loss)
-        val_losses.append(val_loss)
-
-        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f}")
+        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f} | Bisher bestes: {best_val_loss:.4f}")
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -298,7 +278,7 @@ else:
             tokenizer.save_pretrained(TOKENIZER_PATH)
             with open(LABELS_PATH, "w") as f:
                 f.write("\n".join(EMOTION_LABELS))
-            print(f"  ✓ Bestes Modell gespeichert!")
+            print(f"  ✓ Neues bestes Modell gespeichert! (Val: {val_loss:.4f})")
         else:
             patience_counter += 1
             print(f"  ✗ Keine Verbesserung ({patience_counter}/{PATIENCE})")
@@ -306,8 +286,6 @@ else:
                 print(f"\n  Early Stop nach Epoch {epoch+1}!")
                 break
 
-    # overfitting analyse ausgeben
-    zeige_overfitting_analyse(train_losses, val_losses)
     print("\nTraining komplett!")
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
