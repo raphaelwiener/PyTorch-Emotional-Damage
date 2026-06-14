@@ -1,16 +1,17 @@
 # Emotions-Erkennung mit KI
-# Schritt 16: Gradient Clipping und Weight Decay hinzufuegen
-# Gradient Clipping: verhindert dass gradienten zu gross werden
-# -> grosse gradienten koennen das model destabilisieren
-# Weight Decay: bestraft zu grosse gewichte im model
-# -> macht das model robuster und generalisiert besser
-# Beide techniken helfen gegen overfitting
+# Schritt 17: CosineAnnealingLR Scheduler hinzufuegen
+# Problem bisher: learning rate bleibt immer gleich (2e-5)
+# Besser: learning rate am anfang hoch, dann langsam sinken lassen
+# CosineAnnealingLR macht das automatisch - sinkt wie eine cosinus kurve
+# Vorteil: model lernt am anfang schnell und wird am ende feiner
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
 from torch.utils.data import DataLoader
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from torch.optim import AdamW
+# neu: scheduler fuer learning rate
+from torch.optim.lr_scheduler import CosineAnnealingLR
 from collections import defaultdict
 import os
 
@@ -226,21 +227,26 @@ else:
     print(f"Device: {device}")
     model.to(device)
 
-    # weight_decay=0.01 bestraft zu grosse gewichte -> weniger overfitting
-    # ist direkt im AdamW optimizer eingebaut
     optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
 
     NUM_EPOCHS = 10
     PATIENCE = 2
+
+    # scheduler senkt die learning rate nach jeder epoch automatisch
+    # T_max = anzahl der epochs nach denen lr wieder auf anfang zurueckgesetzt wird
+    scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
+
     best_val_loss = float("inf")
     patience_counter = 0
     loss_history = []
 
     print(f"\nTraining startet (max {NUM_EPOCHS} Epochs)...")
-    print("Neu: Gradient Clipping + Weight Decay gegen Overfitting\n")
+    print("Neu: CosineAnnealingLR Scheduler\n")
 
     for epoch in range(NUM_EPOCHS):
-        print(f"Epoch {epoch+1}/{NUM_EPOCHS}")
+        # aktuelle learning rate anzeigen
+        current_lr = optimizer.param_groups[0]["lr"]
+        print(f"Epoch {epoch+1}/{NUM_EPOCHS} | LR: {current_lr:.2e}")
         model.train()
         epoch_loss = []
 
@@ -253,18 +259,18 @@ else:
             output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = output.loss
             loss.backward()
-
-            # gradient clipping - gradienten auf maximal 1.0 begrenzen
-            # verhindert dass ein einzelner batch das model zu stark veraendert
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-
             optimizer.step()
+
             epoch_loss.append(loss.item())
             loss_history.append(loss.item())
 
             if batch_idx % 50 == 0:
                 avg = sum(loss_history[-50:]) / min(len(loss_history), 50)
                 print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f} | Avg: {avg:.4f}")
+
+        # scheduler nach jeder epoch aufrufen - senkt die learning rate
+        scheduler.step()
 
         avg_loss = sum(epoch_loss) / len(epoch_loss)
         val_loss = evaluate(model, device, val_loader)
