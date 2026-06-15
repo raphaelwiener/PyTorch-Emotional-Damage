@@ -1,19 +1,18 @@
 # Emotions-Erkennung mit KI
-# Schritt 17: CosineAnnealingLR Scheduler hinzufuegen
-# Problem bisher: learning rate bleibt immer gleich (2e-5)
-# Besser: learning rate am anfang hoch, dann langsam sinken lassen
-# CosineAnnealingLR macht das automatisch - sinkt wie eine cosinus kurve
-# Vorteil: model lernt am anfang schnell und wird am ende feiner
+# Schritt 18: Menü einbauen - neu trainieren, weitertrainieren oder laden
+# Bisher: modell wird immer neu trainiert wenn keine datei vorhanden
+# Besser: benutzer kann selbst waehlen was er machen will
+# Ausserdem: modell typ wird gespeichert damit man spaeter weiss was geladen werden muss
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
 from torch.utils.data import DataLoader
 from transformers import RobertaTokenizer, RobertaForSequenceClassification
 from torch.optim import AdamW
-# neu: scheduler fuer learning rate
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from collections import defaultdict
 import os
+import shutil
 
 MODEL_PATH = "emotion_model.pt"
 TOKENIZER_PATH = "emotion_tokenizer"
@@ -183,68 +182,20 @@ def evaluate(model, device, val_loader):
     return total_loss / count if count > 0 else 0
 
 # ─────────────────────────────────────────
-# MODELL LADEN ODER TRAINIEREN
+# TRAINING FUNKTION
 # ─────────────────────────────────────────
-model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
-
-if model_exists:
-    print("Vorhandenes Modell wird geladen...")
-    tokenizer = RobertaTokenizer.from_pretrained(TOKENIZER_PATH)
-    model = RobertaForSequenceClassification.from_pretrained(
-        "roberta-base",
-        num_labels=NUM_LABELS
-    )
-    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-    print("Modell geladen!")
-
-else:
-    print("Kein Modell gefunden, Training startet...")
-    tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
-
-    print("\nDatasets werden geladen...")
-    train_go, val_go = load_go_emotions()
-    train_dair, val_dair = load_dair()
-    train_boltuix, val_boltuix = load_boltuix()
-
-    train_combined = concatenate_datasets([train_go, train_dair, train_boltuix])
-    val_combined = concatenate_datasets([val_go, val_dair, val_boltuix])
-
-    print("\nDataset wird balanciert...")
-    train_all = balance_dataset(train_combined, max_pro_label=3000).shuffle(seed=42)
-    val_all = balance_dataset(val_combined, max_pro_label=500).shuffle(seed=42)
-    print(f"Train: {len(train_all)} | Val: {len(val_all)}")
-
-    train_loader = make_loader(train_all, tokenizer, shuffle=True)
-    val_loader = make_loader(val_all, tokenizer, shuffle=False)
-
-    model = RobertaForSequenceClassification.from_pretrained(
-        "roberta-base",
-        num_labels=NUM_LABELS,
-        problem_type="multi_label_classification"
-    )
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Device: {device}")
-    model.to(device)
-
-    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
-
+def training_starten(model, tokenizer, device, train_loader, val_loader):
     NUM_EPOCHS = 10
     PATIENCE = 2
-
-    # scheduler senkt die learning rate nach jeder epoch automatisch
-    # T_max = anzahl der epochs nach denen lr wieder auf anfang zurueckgesetzt wird
+    optimizer = AdamW(model.parameters(), lr=2e-5, weight_decay=0.01)
     scheduler = CosineAnnealingLR(optimizer, T_max=NUM_EPOCHS)
-
     best_val_loss = float("inf")
     patience_counter = 0
     loss_history = []
 
-    print(f"\nTraining startet (max {NUM_EPOCHS} Epochs)...")
-    print("Neu: CosineAnnealingLR Scheduler\n")
+    print(f"\nTraining startet (max {NUM_EPOCHS} Epochs, patience={PATIENCE})...\n")
 
     for epoch in range(NUM_EPOCHS):
-        # aktuelle learning rate anzeigen
         current_lr = optimizer.param_groups[0]["lr"]
         print(f"Epoch {epoch+1}/{NUM_EPOCHS} | LR: {current_lr:.2e}")
         model.train()
@@ -269,9 +220,7 @@ else:
                 avg = sum(loss_history[-50:]) / min(len(loss_history), 50)
                 print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f} | Avg: {avg:.4f}")
 
-        # scheduler nach jeder epoch aufrufen - senkt die learning rate
         scheduler.step()
-
         avg_loss = sum(epoch_loss) / len(epoch_loss)
         val_loss = evaluate(model, device, val_loader)
 
@@ -294,13 +243,10 @@ else:
 
     print("\nTraining komplett!")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-model.to(device)
-
 # ─────────────────────────────────────────
 # INFERENCE
 # ─────────────────────────────────────────
-def predict(text):
+def predict(model, tokenizer, device, text):
     model.eval()
     inputs = tokenizer(
         text,
@@ -316,29 +262,112 @@ def predict(text):
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:5]
 
-print("\n--- Test ---")
-test_texte = [
-    "I am so happy today",
-    "I love you",
-    "fuck you",
-    "I miss you so much",
-    "thanks for nothing",
-    "the sky is blue"
-]
+# ─────────────────────────────────────────
+# MENUE
+# ─────────────────────────────────────────
+print("=" * 50)
+print("  Emotion Detector")
+print("=" * 50)
 
-for text in test_texte:
-    print(f"\n'{text}'")
-    for emotion, score in predict(text):
-        balken = "█" * int(score * 20)
-        print(f"  {emotion:<15} {balken} {score*100:.1f}%")
+model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
 
-print("\n--- Eigene Texte testen ---")
-print("Text eingeben (exit zum beenden):\n")
+if model_exists:
+    print("\n[1] Vorhandenes Modell laden")
+    print("[2] Weitertrainieren")
+    print("[3] Neu trainieren (alles loeschen)")
+    wahl = input("\nAuswahl: ").strip()
+else:
+    print("\nKein Modell gefunden → Training startet automatisch")
+    wahl = "3"
+
+# ─────────────────────────────────────────
+# AUSFUEHREN JE NACH WAHL
+# ─────────────────────────────────────────
+if wahl in ["2", "3"]:
+
+    if wahl == "3" and model_exists:
+        bestaetigung = input("\nWirklich alles loeschen und neu trainieren? (j/n): ").strip().lower()
+        if bestaetigung != "j":
+            print("Abgebrochen.")
+            exit()
+        # alte dateien loeschen
+        if os.path.exists(MODEL_PATH):
+            os.remove(MODEL_PATH)
+        if os.path.exists(TOKENIZER_PATH):
+            shutil.rmtree(TOKENIZER_PATH)
+        if os.path.exists(LABELS_PATH):
+            os.remove(LABELS_PATH)
+        print("Alte Dateien geloescht.\n")
+
+    # datasets laden
+    print("\nDatasets werden geladen...")
+    train_go, val_go = load_go_emotions()
+    train_dair, val_dair = load_dair()
+    train_boltuix, val_boltuix = load_boltuix()
+
+    train_combined = concatenate_datasets([train_go, train_dair, train_boltuix])
+    val_combined = concatenate_datasets([val_go, val_dair, val_boltuix])
+
+    print("\nDataset wird balanciert...")
+    train_all = balance_dataset(train_combined, max_pro_label=3000).shuffle(seed=42)
+    val_all = balance_dataset(val_combined, max_pro_label=500).shuffle(seed=42)
+    print(f"Train: {len(train_all)} | Val: {len(val_all)}")
+
+    train_loader = make_loader(train_all, None, shuffle=True)
+    val_loader = make_loader(val_all, None, shuffle=False)
+
+    tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
+    model = RobertaForSequenceClassification.from_pretrained(
+        "roberta-base",
+        num_labels=NUM_LABELS,
+        problem_type="multi_label_classification"
+    )
+
+    # bei weitertrainieren gespeicherte gewichte laden
+    if wahl == "2" and os.path.exists(MODEL_PATH):
+        model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+        print("\nGespeicherte Gewichte geladen → Training wird fortgesetzt!")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    model.to(device)
+
+    # tokenizer in loader einbauen
+    train_loader = make_loader(train_all, tokenizer, shuffle=True)
+    val_loader = make_loader(val_all, tokenizer, shuffle=False)
+
+    training_starten(model, tokenizer, device, train_loader, val_loader)
+
+elif wahl == "1":
+    print("\nModell wird geladen...")
+    tokenizer = RobertaTokenizer.from_pretrained(TOKENIZER_PATH)
+    model = RobertaForSequenceClassification.from_pretrained(
+        "roberta-base",
+        num_labels=NUM_LABELS
+    )
+    model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model.to(device)
+    print("Modell geladen!")
+
+else:
+    print("Ungueltige Auswahl.")
+    exit()
+
+# ─────────────────────────────────────────
+# INFERENCE LOOP
+# ─────────────────────────────────────────
+print("\n" + "=" * 50)
+print("  Emotion Detector bereit!")
+print(f"  Emotionen: {', '.join(EMOTION_LABELS)}")
+print("  Text eingeben (exit zum beenden)")
+print("=" * 50 + "\n")
+
 while True:
     text = input(">> ")
     if text.lower() == "exit":
         break
-    results = predict(text)
+    results = predict(model, tokenizer, device, text)
     print()
     for emotion, score in results:
         balken = "█" * int(score * 20)
