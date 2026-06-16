@@ -1,8 +1,22 @@
-# Emotions-Erkennung mit KI
-# Schritt 19: Code aufräumen und Kommentare verbessern
-# Alles wird nochmal durchgeschaut und sauber gemacht
-# Funktionen bekommen docstrings (Beschreibungen)
-# Unnötiges wird entfernt, Struktur wird klarer
+# ============================================================
+# Emotion Detector - Finale Version
+# Schulprojekt: KI-basierte Emotionserkennung in Texten
+#
+# Verwendete Technologien:
+# - PyTorch: Deep Learning Framework
+# - HuggingFace Transformers: RoBERTa Sprachmodell
+# - HuggingFace Datasets: go_emotions, dair-ai, boltuix
+#
+# Erkannte Emotionen (12):
+# joy, sadness, anger, fear, love, surprise,
+# disgust, neutral, sarcasm, confusion, shame, desire
+#
+# Trainingsablauf:
+# 1. Drei Datasets laden und auf 12 Labels vereinheitlichen
+# 2. Dataset balancieren (max 3000 pro Emotion)
+# 3. RoBERTa fine-tunen mit Early Stopping
+# 4. Bestes Modell speichern und laden
+# ============================================================
 
 from datasets import load_dataset, Dataset, concatenate_datasets
 import torch
@@ -16,20 +30,23 @@ import shutil
 
 # ─────────────────────────────────────────
 # KONFIGURATION
+# Alle einstellungen an einem ort - leicht zu aendern
 # ─────────────────────────────────────────
-MODEL_PATH = "emotion_model.pt"
-TOKENIZER_PATH = "emotion_tokenizer"
-LABELS_PATH = "emotion_labels.txt"
-MAX_LENGTH = 64       # maximale token laenge pro text
-BATCH_SIZE = 32       # beispiele pro trainingsschritt
-MAX_EPOCHS = 10       # maximale anzahl an epochs
-PATIENCE = 2          # early stop nach X epochs ohne verbesserung
-LR = 2e-5             # learning rate
-WEIGHT_DECAY = 0.01   # gewichtung der weight decay regularisierung
-MAX_PRO_LABEL = 3000  # maximale beispiele pro emotion (balancing)
-MAX_VAL_LABEL = 500   # maximale val beispiele pro emotion
+MODEL_PATH    = "emotion_model.pt"   # gespeicherte modellgewichte
+TOKENIZER_PATH = "emotion_tokenizer" # gespeicherter tokenizer
+LABELS_PATH   = "emotion_labels.txt" # gespeicherte label liste
+
+MAX_LENGTH    = 64      # max tokens pro text (reddit kommentare sind kurz)
+BATCH_SIZE    = 32      # beispiele pro trainingsschritt
+MAX_EPOCHS    = 10      # maximale anzahl epochs (early stop greift vorher)
+PATIENCE      = 2       # epochs ohne verbesserung bevor training stoppt
+LR            = 2e-5    # learning rate fuer AdamW optimizer
+WEIGHT_DECAY  = 0.01    # weight decay gegen overfitting
+MAX_PRO_LABEL = 3000    # max trainingsbeispiele pro emotion (balancing)
+MAX_VAL_LABEL = 500     # max validierungsbeispiele pro emotion
 
 # 12 vereinheitlichte emotionen aus allen 3 datasets
+# sarkasmus kommt aus boltuix, die anderen aus go_emotions und dair-ai
 EMOTION_LABELS = [
     "joy", "sadness", "anger", "fear", "love", "surprise",
     "disgust", "neutral", "sarcasm", "confusion", "shame", "desire"
@@ -38,8 +55,12 @@ NUM_LABELS = len(EMOTION_LABELS)
 
 # ─────────────────────────────────────────
 # LABEL MAPPINGS
-# go_emotions hat 28 labels -> auf 12 mappen
+# Jedes dataset hat andere label-systeme
+# Diese dicts mappen die originalen labels auf unsere 12
 # ─────────────────────────────────────────
+
+# go_emotions: 28 feinkoernige labels -> auf 12 reduziert
+# z.b. annoyance + disapproval -> anger
 GO_ORIG_LABELS = [
     "admiration", "amusement", "anger", "annoyance", "approval", "caring",
     "confusion", "curiosity", "desire", "disappointment", "disapproval",
@@ -48,33 +69,38 @@ GO_ORIG_LABELS = [
     "relief", "remorse", "sadness", "surprise", "neutral"
 ]
 GO_MAP = {
-    "anger": "anger", "annoyance": "anger", "disapproval": "anger",
+    "anger": "anger",       "annoyance": "anger",      "disapproval": "anger",
     "disgust": "disgust",
-    "fear": "fear", "nervousness": "fear",
-    "grief": "sadness", "sadness": "sadness", "disappointment": "sadness", "remorse": "sadness",
-    "joy": "joy", "amusement": "joy", "excitement": "joy", "pride": "joy",
-    "gratitude": "joy", "optimism": "joy", "relief": "joy",
-    "love": "love", "admiration": "love", "caring": "love",
+    "fear": "fear",         "nervousness": "fear",
+    "grief": "sadness",     "sadness": "sadness",       "disappointment": "sadness",
+    "remorse": "sadness",
+    "joy": "joy",           "amusement": "joy",         "excitement": "joy",
+    "pride": "joy",         "gratitude": "joy",         "optimism": "joy",
+    "relief": "joy",
+    "love": "love",         "admiration": "love",       "caring": "love",
     "surprise": "surprise", "realization": "surprise",
-    "neutral": "neutral", "approval": "neutral",
-    "confusion": "confusion", "embarrassment": "shame",
-    "desire": "desire", "curiosity": "desire",
+    "neutral": "neutral",   "approval": "neutral",
+    "confusion": "confusion",
+    "embarrassment": "shame",
+    "desire": "desire",     "curiosity": "desire",
 }
 
-# dair-ai hat 6 labels in dieser reihenfolge
+# dair-ai: 6 labels, reihenfolge entspricht index 0-5
 DAIR_MAP = ["sadness", "joy", "love", "anger", "fear", "surprise"]
 
-# boltuix hat 13 labels inkl. sarkasmus
+# boltuix: 13 labels inkl. sarkasmus - das war der hauptgrund warum
+# dieses dataset hinzugefuegt wurde
 BOLTUIX_ORIG_LABELS = [
     "happiness", "sadness", "neutral", "anger", "love",
     "fear", "disgust", "confusion", "surprise", "shame",
     "guilt", "sarcasm", "desire"
 ]
 BOLTUIX_MAP = {
-    "happiness": "joy", "sadness": "sadness", "neutral": "neutral",
-    "anger": "anger", "love": "love", "fear": "fear",
-    "disgust": "disgust", "confusion": "confusion", "surprise": "surprise",
-    "shame": "shame", "guilt": "shame", "sarcasm": "sarcasm", "desire": "desire"
+    "happiness": "joy",   "sadness": "sadness",   "neutral": "neutral",
+    "anger": "anger",     "love": "love",          "fear": "fear",
+    "disgust": "disgust", "confusion": "confusion","surprise": "surprise",
+    "shame": "shame",     "guilt": "shame",        "sarcasm": "sarcasm",
+    "desire": "desire"
 }
 
 # ─────────────────────────────────────────
@@ -82,8 +108,9 @@ BOLTUIX_MAP = {
 # ─────────────────────────────────────────
 def balance_dataset(dataset, max_pro_label):
     """
-    Begrenzt die anzahl der beispiele pro emotion.
-    Verhindert dass haeufige emotionen (z.b. neutral) dominieren.
+    Begrenzt die anzahl der beispiele pro emotion auf max_pro_label.
+    Ohne balancing wuerde neutral (haeufigste emotion) dominieren
+    und das model wuerde fast alles als neutral klassifizieren.
     """
     zaehler = defaultdict(int)
     texts, labels = [], []
@@ -93,14 +120,25 @@ def balance_dataset(dataset, max_pro_label):
             texts.append(item["text"])
             labels.append(lbl)
             zaehler[lbl] += 1
+
+    print(f"  Balanciert ({max_pro_label} max pro Label):")
+    for i, name in enumerate(EMOTION_LABELS):
+        if zaehler[i] > 0:
+            print(f"    {name:<12} {zaehler[i]}")
+
     return Dataset.from_dict({"text": texts, "label": labels})
 
 def load_go_emotions():
-    """Laedt go_emotions mit train und validation split."""
+    """
+    Laedt go_emotions von Google Research.
+    58k Reddit-Kommentare mit 28 Emotionen.
+    Hat eigene train/validation splits.
+    """
     print("  Lade go_emotions (Reddit, 28 Emotionen → 12)...")
     raw = load_dataset("google-research-datasets/go_emotions", "simplified")
     texts_train, labels_train = [], []
     texts_val, labels_val = [], []
+
     for split, texts, labels in [
         ("train", texts_train, labels_train),
         ("validation", texts_val, labels_val)
@@ -112,7 +150,8 @@ def load_go_emotions():
                 if mapped in EMOTION_LABELS:
                     texts.append(item["text"])
                     labels.append(EMOTION_LABELS.index(mapped))
-                    break
+                    break  # nur erstes passendes label nehmen
+
     print(f"  → {len(texts_train)} Train / {len(texts_val)} Val")
     return (
         Dataset.from_dict({"text": texts_train, "label": labels_train}),
@@ -120,17 +159,23 @@ def load_go_emotions():
     )
 
 def load_dair():
-    """Laedt dair-ai/emotion Twitter dataset mit 6 Emotionen."""
+    """
+    Laedt dair-ai/emotion.
+    416k Twitter-Nachrichten mit 6 Emotionen.
+    Viel mehr daten als go_emotions - verbessert generalisierung.
+    """
     print("  Lade dair-ai/emotion (Twitter, 6 Emotionen)...")
     raw = load_dataset("dair-ai/emotion", "split")
     texts_train, labels_train = [], []
     texts_val, labels_val = [], []
+
     for item in raw["train"]:
         texts_train.append(item["text"])
         labels_train.append(EMOTION_LABELS.index(DAIR_MAP[item["label"]]))
     for item in raw["validation"]:
         texts_val.append(item["text"])
         labels_val.append(EMOTION_LABELS.index(DAIR_MAP[item["label"]]))
+
     print(f"  → {len(texts_train)} Train / {len(texts_val)} Val")
     return (
         Dataset.from_dict({"text": texts_train, "label": labels_train}),
@@ -138,22 +183,34 @@ def load_dair():
     )
 
 def load_boltuix():
-    """Laedt boltuix dataset mit 13 Emotionen inkl. Sarkasmus."""
+    """
+    Laedt boltuix/emotions-dataset.
+    131k Beispiele mit 13 Emotionen inkl. Sarkasmus.
+    Sarkasmus war der hauptgrund dieses dataset hinzuzufuegen.
+    Kein eigener val split - wird manuell 90/10 aufgeteilt.
+    """
     print("  Lade boltuix/emotions-dataset (13 Emotionen + Sarkasmus)...")
     raw = load_dataset("boltuix/emotions-dataset")["train"]
+
+    # textspalte automatisch finden - boltuix hat anderen spaltennamen
     text_col = next(
         (col for col in ["text", "sentence", "content", "input", "Text"]
          if col in raw.column_names),
         raw.column_names[0]
     )
+
     texts, labels = [], []
     for item in raw:
         lbl = item.get("label", item.get("emotion", 2))
-        orig = BOLTUIX_ORIG_LABELS[lbl] if isinstance(lbl, int) and lbl < len(BOLTUIX_ORIG_LABELS) else str(lbl).lower()
+        orig = (BOLTUIX_ORIG_LABELS[lbl]
+                if isinstance(lbl, int) and lbl < len(BOLTUIX_ORIG_LABELS)
+                else str(lbl).lower())
         mapped = BOLTUIX_MAP.get(orig)
         if mapped in EMOTION_LABELS:
             texts.append(item[text_col])
             labels.append(EMOTION_LABELS.index(mapped))
+
+    # 90% training, 10% validation
     split_idx = int(len(texts) * 0.9)
     print(f"  → {split_idx} Train / {len(texts) - split_idx} Val")
     return (
@@ -162,45 +219,67 @@ def load_boltuix():
     )
 
 def alle_datasets_laden():
-    """Laedt alle 3 datasets und gibt train und val loader zurueck."""
-    train_go, val_go = load_go_emotions()
-    train_dair, val_dair = load_dair()
+    """
+    Laedt alle 3 datasets, kombiniert und balanciert sie.
+    Gibt fertige train und val datasets zurueck.
+    """
+    train_go, val_go       = load_go_emotions()
+    train_dair, val_dair   = load_dair()
     train_boltuix, val_boltuix = load_boltuix()
 
+    # alle zusammenfuehren
     train_combined = concatenate_datasets([train_go, train_dair, train_boltuix])
-    val_combined = concatenate_datasets([val_go, val_dair, val_boltuix])
+    val_combined   = concatenate_datasets([val_go, val_dair, val_boltuix])
 
-    print("\nDatasets werden balanciert...")
+    # balancieren damit keine emotion dominiert
+    print("\nTrainingsdaten werden balanciert...")
     train_all = balance_dataset(train_combined, MAX_PRO_LABEL).shuffle(seed=42)
+    print("\nValidierungsdaten werden balanciert...")
     val_all = balance_dataset(val_combined, MAX_VAL_LABEL).shuffle(seed=42)
-    print(f"Train: {len(train_all)} | Val: {len(val_all)}")
+
+    print(f"\nGesamt: {len(train_all)} Train / {len(val_all)} Val")
     return train_all, val_all
 
 # ─────────────────────────────────────────
-# TOKENIZER FUNKTION
+# TOKENIZER & DATALOADER
 # ─────────────────────────────────────────
 def make_loader(dataset, tokenizer, shuffle=True):
-    """Tokenisiert dataset und gibt dataloader zurueck."""
+    """
+    Tokenisiert das dataset und erstellt einen DataLoader.
+    Tokenisierung = text in zahlen umwandeln die RoBERTa versteht.
+    One-Hot Encoding: [0,0,1,0,...] wenn emotion index 2 aktiv ist.
+    """
     def tokenize_fn(batch):
-        tokens = tokenizer(batch["text"], padding="max_length", truncation=True, max_length=MAX_LENGTH)
+        tokens = tokenizer(
+            batch["text"],
+            padding="max_length",
+            truncation=True,
+            max_length=MAX_LENGTH
+        )
+        # one-hot encoding: jede emotion bekommt einen platz im vektor
         one_hot = torch.zeros(len(batch["text"]), NUM_LABELS, dtype=torch.float32)
         for i, lbl in enumerate(batch["label"]):
             if lbl < NUM_LABELS:
                 one_hot[i][lbl] = 1.0
         tokens["labels"] = one_hot.tolist()
         return tokens
+
     tokenized = dataset.map(tokenize_fn, batched=True, remove_columns=dataset.column_names)
     tokenized.set_format(type="torch", columns=["input_ids", "attention_mask", "labels"])
     return DataLoader(tokenized, batch_size=BATCH_SIZE, shuffle=shuffle)
 
 # ─────────────────────────────────────────
-# VALIDATION FUNKTION
+# VALIDATION
 # ─────────────────────────────────────────
 def evaluate(model, device, val_loader):
-    """Berechnet val loss auf ungesehenen daten."""
+    """
+    Berechnet den durchschnittlichen loss auf dem validation set.
+    Validation set = daten die das model beim training NIE gesehen hat.
+    Wenn val loss steigt waehrend train loss sinkt = overfitting.
+    """
     model.eval()
     total_loss, count = 0, 0
-    with torch.no_grad():
+    with torch.no_grad():  # kein gradient berechnen spart speicher
         for batch in val_loader:
             output = model(
                 input_ids=batch["input_ids"].to(device),
@@ -212,17 +291,27 @@ def evaluate(model, device, val_loader):
     return total_loss / count if count > 0 else 0
 
 # ─────────────────────────────────────────
-# TRAINING FUNKTION
+# TRAINING
 # ─────────────────────────────────────────
 def training_starten(model, tokenizer, device, train_loader, val_loader):
-    """Trainiert das model mit early stopping und speichert bestes modell."""
+    """
+    Trainiert RoBERTa mit folgenden Optimierungen:
+    - AdamW + Weight Decay: verhindert overfitting durch regularisierung
+    - Gradient Clipping: verhindert explodierende gradienten
+    - CosineAnnealingLR: learning rate sinkt automatisch
+    - Early Stopping: stoppt wenn val loss nicht mehr besser wird
+    - Nur bestes modell wird gespeichert
+    """
     optimizer = AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
+    # learning rate sinkt nach jeder epoch wie eine cosinus kurve
     scheduler = CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS)
+
     best_val_loss = float("inf")
     patience_counter = 0
     loss_history = []
 
-    print(f"\nTraining startet (max {MAX_EPOCHS} Epochs, patience={PATIENCE})...\n")
+    print(f"\nTraining startet (max {MAX_EPOCHS} Epochs, patience={PATIENCE})...")
+    print(f"Early Stop: training stoppt wenn val loss {PATIENCE}x nicht besser wird\n")
 
     for epoch in range(MAX_EPOCHS):
         current_lr = optimizer.param_groups[0]["lr"]
@@ -231,31 +320,45 @@ def training_starten(model, tokenizer, device, train_loader, val_loader):
         epoch_loss = []
 
         for batch_idx, batch in enumerate(train_loader):
-            input_ids = batch["input_ids"].to(device)
+            input_ids      = batch["input_ids"].to(device)
             attention_mask = batch["attention_mask"].to(device)
-            labels = batch["labels"].float().to(device)
+            labels         = batch["labels"].float().to(device)
 
-            optimizer.zero_grad()
+            optimizer.zero_grad()  # gradienten vom letzten schritt loeschen
+
+            # vorwaertsdurchlauf: model macht vorhersage
             output = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
             loss = output.loss
+
+            # rueckwaertsdurchlauf: gradienten berechnen
             loss.backward()
+
+            # gradient clipping: max gradient = 1.0 verhindert instabilitaet
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+
+            # gewichte aktualisieren
             optimizer.step()
 
             epoch_loss.append(loss.item())
             loss_history.append(loss.item())
 
             if batch_idx % 50 == 0:
+                # gleitender durchschnitt der letzten 50 batches
                 avg = sum(loss_history[-50:]) / min(len(loss_history), 50)
-                print(f"  Batch {batch_idx}/{len(train_loader)}, Loss: {loss.item():.4f} | Avg: {avg:.4f}")
+                print(f"  Batch {batch_idx}/{len(train_loader)}, "
+                      f"Loss: {loss.item():.4f} | Avg: {avg:.4f}")
 
+        # learning rate nach jeder epoch senken
         scheduler.step()
+
         avg_loss = sum(epoch_loss) / len(epoch_loss)
         val_loss = evaluate(model, device, val_loader)
 
-        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | Val: {val_loss:.4f} | Bisher bestes: {best_val_loss:.4f}")
+        print(f"\nEpoch {epoch+1} | Train: {avg_loss:.4f} | "
+              f"Val: {val_loss:.4f} | Bisher bestes: {best_val_loss:.4f}")
 
         if val_loss < best_val_loss:
+            # verbesserung -> bestes modell speichern
             best_val_loss = val_loss
             patience_counter = 0
             torch.save(model.state_dict(), MODEL_PATH)
@@ -264,33 +367,48 @@ def training_starten(model, tokenizer, device, train_loader, val_loader):
                 f.write("\n".join(EMOTION_LABELS))
             print(f"  ✓ Neues bestes Modell gespeichert! (Val: {val_loss:.4f})")
         else:
+            # keine verbesserung -> patience erhoehen
             patience_counter += 1
             print(f"  ✗ Keine Verbesserung ({patience_counter}/{PATIENCE})")
             if patience_counter >= PATIENCE:
                 print(f"\n  Early Stop nach Epoch {epoch+1}!")
+                print(f"  Bestes Modell: Val Loss {best_val_loss:.4f}")
                 break
 
     print(f"\nTraining komplett! Bester Val Loss: {best_val_loss:.4f}")
 
 # ─────────────────────────────────────────
-# INFERENCE FUNKTION
+# INFERENCE
 # ─────────────────────────────────────────
 def predict(model, tokenizer, device, text):
-    """Gibt top 5 emotionen mit wahrscheinlichkeiten zurueck."""
+    """
+    Analysiert einen text und gibt die top 5 emotionen zurueck.
+    sigmoid wandelt rohausgabe in wahrscheinlichkeiten 0-1 um.
+    """
     model.eval()
-    inputs = tokenizer(text, return_tensors="pt", padding=True, truncation=True, max_length=MAX_LENGTH).to(device)
+    inputs = tokenizer(
+        text,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=MAX_LENGTH
+    ).to(device)
+
     with torch.no_grad():
         output = model(**inputs)
+
+    # sigmoid: werte zwischen 0 (unwahrscheinlich) und 1 (sehr wahrscheinlich)
     probs = torch.sigmoid(output.logits[0])
     results = [(EMOTION_LABELS[i], probs[i].item()) for i in range(NUM_LABELS)]
     results.sort(key=lambda x: x[1], reverse=True)
     return results[:5]
 
 # ─────────────────────────────────────────
-# MENUE
+# HAUPTPROGRAMM - MENUE
 # ─────────────────────────────────────────
 print("=" * 50)
 print("  Emotion Detector")
+print("  RoBERTa + go_emotions + dair-ai + boltuix")
 print("=" * 50)
 
 model_exists = os.path.exists(MODEL_PATH) and os.path.exists(TOKENIZER_PATH)
@@ -301,16 +419,17 @@ if model_exists:
     print("[3] Neu trainieren (alles loeschen)")
     wahl = input("\nAuswahl: ").strip()
 else:
-    print("\nKein Modell gefunden → Training startet")
+    print("\nKein Modell gefunden → Training wird gestartet")
     wahl = "3"
 
 # ─────────────────────────────────────────
-# AUSFUEHREN
+# TRAINING ODER LADEN
 # ─────────────────────────────────────────
 if wahl in ["2", "3"]:
 
+    # bei neu trainieren: alte dateien loeschen
     if wahl == "3" and model_exists:
-        bestaetigung = input("\nWirklich alles loeschen? (j/n): ").strip().lower()
+        bestaetigung = input("\nWirklich alles loeschen und neu trainieren? (j/n): ").strip().lower()
         if bestaetigung != "j":
             print("Abgebrochen.")
             exit()
@@ -319,11 +438,14 @@ if wahl in ["2", "3"]:
                 os.remove(path)
         if os.path.exists(TOKENIZER_PATH):
             shutil.rmtree(TOKENIZER_PATH)
-        print("Geloescht.\n")
+        print("Alte Dateien geloescht.\n")
 
+    # datasets laden
     print("\nDatasets werden geladen...")
     train_all, val_all = alle_datasets_laden()
 
+    # roberta laden
+    print("\nRoBERTa wird geladen...")
     tokenizer = RobertaTokenizer.from_pretrained("roberta-base")
     model = RobertaForSequenceClassification.from_pretrained(
         "roberta-base",
@@ -331,22 +453,29 @@ if wahl in ["2", "3"]:
         problem_type="multi_label_classification"
     )
 
+    # bei weitertrainieren: gespeicherte gewichte laden
     if wahl == "2" and os.path.exists(MODEL_PATH):
         model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
-        print("Gespeicherte Gewichte geladen → Weitertrainieren!")
+        print("Gespeicherte Gewichte geladen → Training wird fortgesetzt!")
 
+    # gpu wenn vorhanden, sonst cpu
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
     model.to(device)
 
     train_loader = make_loader(train_all, tokenizer, shuffle=True)
-    val_loader = make_loader(val_all, tokenizer, shuffle=False)
+    val_loader   = make_loader(val_all, tokenizer, shuffle=False)
+
     training_starten(model, tokenizer, device, train_loader, val_loader)
 
 elif wahl == "1":
+    # gespeichertes modell laden
     print("\nModell wird geladen...")
     tokenizer = RobertaTokenizer.from_pretrained(TOKENIZER_PATH)
-    model = RobertaForSequenceClassification.from_pretrained("roberta-base", num_labels=NUM_LABELS)
+    model = RobertaForSequenceClassification.from_pretrained(
+        "roberta-base",
+        num_labels=NUM_LABELS
+    )
     model.load_state_dict(torch.load(MODEL_PATH, map_location="cpu"))
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model.to(device)
@@ -358,17 +487,19 @@ else:
 
 # ─────────────────────────────────────────
 # INFERENCE LOOP
+# Endlosschleife - texte eingeben und emotionen erkennen
 # ─────────────────────────────────────────
 print("\n" + "=" * 50)
 print("  Emotion Detector bereit!")
-print(f"  Emotionen: {', '.join(EMOTION_LABELS)}")
-print("  Text eingeben (exit zum beenden)")
+print(f"  Erkannte Emotionen: {', '.join(EMOTION_LABELS)}")
+print("  Text eingeben | exit zum Beenden")
 print("=" * 50 + "\n")
 
 while True:
     text = input(">> ")
     if text.lower() == "exit":
         break
+
     results = predict(model, tokenizer, device, text)
     print()
     for emotion, score in results:
