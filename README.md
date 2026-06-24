@@ -180,9 +180,3 @@ Balkendiagramm angezeigt.
    - Early Stopping anhand des Validation-Loss
 4. Bestes Modell speichern
 
----
-
-## Hinweis zur KI-Nutzung
-
-Dieses Projekt wurde mit Unterstützung eines KI-Assistenten entwickelt.
-Die verwendeten Prompts sind in `PROMPTS.md` dokumentiert.
